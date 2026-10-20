@@ -201,7 +201,11 @@ export class ComposeServicesAdapter {
       if (port < 1 || port > 65535) return { ok: false, reason: "malformed" };
       return (await this.connectTcp(host, port, timeoutMs)) ? { ok: true } : { ok: false, reason: "unreachable" };
     }
-    if (!/^[A-Za-z][A-Za-z0-9._+-]*$/.test(portStr)) return { ok: false, reason: "malformed" };
+    // A service name may start with a digit (`9pfs` in the services database) but needs a letter,
+    // and never starts with `-`, so nothing reads as an `nc` option.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(portStr) || !/[A-Za-z]/.test(portStr)) {
+      return { ok: false, reason: "malformed" };
+    }
     try {
       await this.exec("command -v nc");
     } catch {

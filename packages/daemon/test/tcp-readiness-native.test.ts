@@ -43,7 +43,7 @@ describe.skipIf(process.platform === "win32")("TCP service readiness", () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it.each(["127.0.0.1", "127.0.0.1:", ":5432", "127.0.0.1:0", "127.0.0.1:65536", "::1:5432", "db:post gres", "db:-5432"])(
+  it.each(["127.0.0.1", "127.0.0.1:", ":5432", "127.0.0.1:0", "127.0.0.1:65536", "::1:5432", "db:post gres", "db:-5432", "db:-pfs", "db:12-34"])(
     "refuses the malformed target %j without probing, and says why",
     async target => {
       const { exec, adapter: a } = adapter();
@@ -70,6 +70,14 @@ describe.skipIf(process.platform === "win32")("TCP service readiness", () => {
       const a = new ComposeServicesAdapter(async cmd => { commands.push(cmd); return ""; });
       expect(await a.probeTcp("db:postgresql", 3000)).toBe(true);
       expect(commands).toEqual(["command -v nc", "nc -z -w 3 'db' 'postgresql' 2>/dev/null"]);
+    });
+
+    it("accepts a service name that starts with a digit, such as 9pfs", async () => {
+      const commands: string[] = [];
+      const a = new ComposeServicesAdapter(async cmd => { commands.push(cmd); return ""; });
+      const [result] = await evaluateWaitTargets([{ tcp: "fs:9pfs" }], a);
+      expect(result!.status).toBe("healthy");
+      expect(commands).toEqual(["command -v nc", "nc -z -w 5 'fs' '9pfs' 2>/dev/null"]);
     });
 
     it("reads an nc failure as not ready, with the plain detail", async () => {
