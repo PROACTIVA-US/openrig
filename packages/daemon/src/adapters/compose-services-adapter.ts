@@ -3,6 +3,11 @@ import type { ExecFn } from "./tmux.js";
 
 // -- Result types --
 
+/** Outcome of a TCP wait-target check. `reason` says why a failed check failed. */
+export type TcpCheckResult =
+  | { ok: true }
+  | { ok: false; reason: "malformed" | "unreachable" | "named_port_needs_nc" };
+
 export type ComposeResult =
   | { ok: true }
   | { ok: false; code: string; message: string };
@@ -175,15 +180,43 @@ export class ComposeServicesAdapter {
     }
   }
 
-  /** Probe a TCP wait target. Returns true if a TCP connection to host:port opens within the
-   * timeout. Uses Node's own socket rather than an external `nc`, which many Linux installs lack. */
+  /** Probe a TCP wait target. Returns true if the port is open. */
   async probeTcp(target: string, timeoutMs: number = 5000): Promise<boolean> {
+    return (await this.checkTcp(target, timeoutMs)).ok;
+  }
+
+  /**
+   * Check a TCP wait target (`host:port`, `[v6]:port`, or `host:service-name`) and say why it
+   * failed. A numeric port is probed with Node's own socket, so it works without an external `nc`,
+   * which many Linux installs lack. A named port such as `db:postgresql` goes through `nc`, which
+   * looks the service name up; where `nc` is missing the check fails with `named_port_needs_nc`.
+   */
+  async checkTcp(target: string, timeoutMs: number = 5000): Promise<TcpCheckResult> {
     const match = /^(?:\[([^\]]+)\]|([^:]+)):([^:]+)$/.exec(target);
     const host = match?.[1] ?? match?.[2];
     const portStr = match?.[3];
-    if (!host || !portStr || !/^\d+$/.test(portStr)) return false;
-    const port = Number(portStr);
-    if (port < 1 || port > 65535) return false;
+    if (!host || !portStr) return { ok: false, reason: "malformed" };
+    if (/^\d+$/.test(portStr)) {
+      const port = Number(portStr);
+      if (port < 1 || port > 65535) return { ok: false, reason: "malformed" };
+      return (await this.connectTcp(host, port, timeoutMs)) ? { ok: true } : { ok: false, reason: "unreachable" };
+    }
+    if (!/^[A-Za-z][A-Za-z0-9._+-]*$/.test(portStr)) return { ok: false, reason: "malformed" };
+    try {
+      await this.exec("command -v nc");
+    } catch {
+      return { ok: false, reason: "named_port_needs_nc" };
+    }
+    try {
+      await this.exec(`nc -z -w ${Math.ceil(timeoutMs / 1000)} ${sq(host)} ${sq(portStr)} 2>/dev/null`);
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "unreachable" };
+    }
+  }
+
+  /** True if a TCP connection to host:port opens within the timeout. */
+  private connectTcp(host: string, port: number, timeoutMs: number): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (ok: boolean) => {
