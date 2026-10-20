@@ -1,3 +1,4 @@
+import { connect } from "node:net";
 import type { ExecFn } from "./tmux.js";
 
 // -- Result types --
@@ -174,19 +175,28 @@ export class ComposeServicesAdapter {
     }
   }
 
-  /** Probe a TCP wait target. Returns true if the port is open. */
+  /** Probe a TCP wait target. Returns true if a TCP connection to host:port opens within the
+   * timeout. Uses Node's own socket rather than an external `nc`, which many Linux installs lack. */
   async probeTcp(target: string, timeoutMs: number = 5000): Promise<boolean> {
-    try {
-      const match = /^(?:\[([^\]]+)\]|([^:]+)):([^:]+)$/.exec(target);
-      const host = match?.[1] ?? match?.[2];
-      const portStr = match?.[3];
-      if (!host || !portStr) return false;
-      const cmd = `nc -z -w ${Math.ceil(timeoutMs / 1000)} ${sq(host)} ${sq(portStr)} 2>/dev/null`;
-      await this.exec(cmd);
-      return true;
-    } catch {
-      return false;
-    }
+    const match = /^(?:\[([^\]]+)\]|([^:]+)):([^:]+)$/.exec(target);
+    const host = match?.[1] ?? match?.[2];
+    const portStr = match?.[3];
+    if (!host || !portStr || !/^\d+$/.test(portStr)) return false;
+    const port = Number(portStr);
+    if (port < 1 || port > 65535) return false;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        resolve(ok);
+      };
+      const socket = connect({ host, port, timeout: timeoutMs });
+      socket.once("connect", () => finish(true));
+      socket.once("timeout", () => finish(false));
+      socket.once("error", () => finish(false));
+    });
   }
 
   // -- Private helpers --
